@@ -601,18 +601,16 @@ if __name__ == "__main__":
     # image_bgr = cv2.imread("calibration/daylight/red/1.jpg")
     # process_frame(image_bgr)
 
-    images = []
-    for i in range(1, 6):
-        images.append(cv2.imread(f"calibration/daylight/purple/{i}.jpg"))
+    # images = []
+    # for i in range(1, 6):
+    #     images.append(cv2.imread(f"calibration/daylight/purple/{i}.jpg"))
 
-    purples = get_colors_for_calibration(images)
+    # purples = get_colors_for_calibration(images)
 
     image_bgr = cv2.imread("data/1.jpg")
+    img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     tt = TableTop(image_bgr)
-    # display_hsv(tt.tabletop_masked_hsv, "Tabletop Masked HSV")
 
-    mask, masked = find_initial_ball_mask_by_laplace(tt.tabletop_hsv)
-    display_hsv(masked)
+    _, tabletop_masked_bgr = mask_quad(tt.original_bgr, tt.tabletop_quad)
 
-    # _, masked_image_hsv = create_color_mask(purples, tt.tabletop_masked_hsv)
-    # display_hsv(masked_image_hsv, "Masked tabletop HSV")
+    cv2.imwrite("tabletop/1.jpg", tabletop_masked_bgr)
