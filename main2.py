@@ -1,7 +1,18 @@
+import json
 import cv2
 import colour
 import numpy as np
 from matplotlib import pyplot as plt
+
+# from ultralytics import YOLO
+# import torch
+
+# device = "0" if torch.cuda.is_available() else "cpu"
+# if device == "0":
+#     print("Found GPU!")
+#     torch.cuda.set_device(0)
+
+# model = YOLO("yolov8n.pt")
 
 
 def create_convex_hull(contours):
@@ -312,6 +323,27 @@ def get_k_significant_colors_in_contour(image_hsv, contour, k):
     # Extract the pixels inside the contour
     mask = np.zeros(image_hsv.shape[:2], dtype=np.uint8)
     cv2.drawContours(mask, [contour], 0, 255, -1)
+
+    return get_k_significant_colors_in_mask(image_hsv, mask, k)
+
+
+def check_if_mask_is_mostly_white(image_hsv, mask):
+    points = np.where(mask == 255)
+    pixels = image_hsv[points[0], points[1]]
+
+    white_lower_hsv = np.array([0, 0, 200], dtype=np.uint8)
+    white_upper_hsv = np.array([180, 50, 255], dtype=np.uint8)
+
+    white_mask = cv2.inRange(image_hsv, white_lower_hsv, white_upper_hsv)
+    white_mask = cv2.bitwise_and(white_mask, mask)
+    white_pixels = np.where(white_mask == 255)
+
+    print("pixels", len(pixels), "white", len(white_pixels[0]))
+
+    return len(white_pixels[0]) / len(pixels) > 0.9
+
+
+def get_k_significant_colors_in_mask(image_hsv, mask, k):
     points = np.where(mask == 255)
     pixels = image_hsv[points[0], points[1]]
 
@@ -597,6 +629,133 @@ def create_color_mask(colors, image_hsv):
     return combined_mask, masked_image_hsv
 
 
+def get_ball_positions(img):
+    imgsz = 2560
+    results = model.predict(source=img, imgsz=imgsz, conf=0.01)
+
+    height = img.shape[0]
+    width = img.shape[1]
+    length = max((height, width))
+    scale = length / imgsz
+
+    def proc_box(box):
+        x1, y1, x2, y2 = box.xyxy[0]
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+        return (x1, y1, x2, y2)
+
+    def filter_box(box):
+        x1, y1, x2, y2 = box
+        w, h = x2 - x1, y2 - y1
+
+        max_allowed_size = (y1 / height) * 30 + 40
+
+        if w > max_allowed_size or h > max_allowed_size:
+            return False
+
+        if w < 10 or h < 10:
+            return False
+
+        ratio = w / h
+        if ratio < 0.5 or ratio > 2:
+            return False
+
+        return True
+
+    def box_contains(contained, container):
+        if contained == container:
+            return False
+
+        if (
+            container[0] < contained[0]
+            and container[1] < contained[1]
+            and container[2] > contained[2]
+            and container[3] > contained[3]
+        ):
+            return True
+
+        mx1 = max(container[0], contained[0])
+        my1 = max(container[1], contained[1])
+        mx2 = min(container[2], contained[2])
+        my2 = min(container[3], contained[3])
+
+        dx = max(0, mx2 - mx1)
+        dy = max(0, my2 - my1)
+
+        area_shared = dx * dy
+        area_self = (contained[3] - contained[1]) * (contained[2] - contained[0])
+        area_other = (container[3] - container[1]) * (container[2] - container[0])
+
+        if area_shared / area_self > 0.9:
+            return area_other > area_self
+
+        return False
+
+    ball_circles = []
+
+    for result in results:
+        boxes = result.boxes
+
+        boxes = list(map(proc_box, boxes))
+        boxes = list(filter(filter_box, boxes))
+
+        for box in boxes:
+            x1, y1, x2, y2 = box
+            w, h = x2 - x1, y2 - y1
+
+            if any(box_contains(box, b) for b in boxes):
+                color = (255, 0, 0)
+                continue
+            else:
+                color = (0, 255, 0)
+
+            center = ((x1 + x2) // 2, (y1 + y2) // 2)
+            radius = max(x2 - x1, y2 - y1) // 2
+            # cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            # cv2.circle(img, center, radius, color, 2)
+            ball_circles.append((center, radius))
+
+    return ball_circles
+
+
+def cut_out_ball(image, ball_circle, other_balls):
+    balls_in_front = [
+        ball
+        for ball in other_balls
+        if (ball[0][1] + ball[1]) > (ball_circle[0][1] + ball_circle[1])
+    ]
+
+    # Create mask just for the ball circle to cut it out:
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    cv2.circle(mask, ball_circle[0], ball_circle[1], 255, -1)
+
+    # Now paint all other balls in front on the mask in black:
+    for ball in balls_in_front:
+        cv2.circle(mask, ball[0], ball[1], 0, -1)
+
+    masked_image = cv2.bitwise_and(image, image, mask=mask)
+    return mask, masked_image
+
+
+def calibrate():
+    results = {}
+
+    for color in ["red", "purple", "yellow", "orange", "brown", "green"]:
+        images = []
+        for i in range(1, 6):
+            images.append(cv2.imread(f"calibration/daylight/{color}/{i}.jpg"))
+
+        colors = get_colors_for_calibration(images)
+        # display_colors_hsv(colors)
+
+        results[color] = colors
+
+    return results
+
+
+def cut_out_pool_balls(): ...
+
+
 if __name__ == "__main__":
     # image_bgr = cv2.imread("calibration/daylight/red/1.jpg")
     # process_frame(image_bgr)
@@ -606,11 +765,52 @@ if __name__ == "__main__":
     #     images.append(cv2.imread(f"calibration/daylight/purple/{i}.jpg"))
 
     # purples = get_colors_for_calibration(images)
+    # colors_dict = calibrate()
+    # print(colors_dict)
 
     image_bgr = cv2.imread("data/1.jpg")
     img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     tt = TableTop(image_bgr)
 
     _, tabletop_masked_bgr = mask_quad(tt.original_bgr, tt.tabletop_quad)
+    _, tabletop_masked_hsv = mask_quad(tt.original_hsv, tt.tabletop_quad)
 
-    cv2.imwrite("tabletop/1.jpg", tabletop_masked_bgr)
+    # ball_positions = get_ball_positions(tabletop_masked_bgr)
+    # print(ball_positions)
+
+    with open("data/1_balls.json") as f:
+        ball_positions = json.load(f)
+
+    for i, ball in enumerate(ball_positions):
+        ball_mask, masked_img = cut_out_ball(tabletop_masked_bgr, ball, ball_positions)
+
+        # if check_if_mask_is_mostly_white(tabletop_masked_hsv, ball_mask):
+        #     print("Cue ball found")
+        cv2.circle(image_bgr, ball[0], ball[1], (0, 255, 0), 2)
+
+    display(image_bgr, "Tabletop with balls")
+
+    # colors, percentages = get_k_significant_colors_in_mask(
+    #     tabletop_masked_hsv, ball_mask, 10
+    # )
+
+    # results = []
+
+    # for color, percentage in zip(colors, percentages):
+    #     # Get distance of color from tt.tabletop_median_hsv:
+    #     distance = color_distance(color, tt.tabletop_median_hsv)
+    #     strength = color[1] / 255
+    #     color_score = strength * distance
+
+    #     # "Weak colors"?
+    #     if color[1] < 80 or (color[1] < 100 and color[2] < 100):
+    #         continue
+
+    #     results.append((color, color_score))
+
+    # results = sorted(results, key=lambda x: x[1], reverse=True)
+    # results = [x[0] for x in results]
+    # print("colors", results)
+    # display_colors_hsv(results)
+
+    # cv2.imwrite(f"runs/masked_balls/ball_{i}.jpg", masked_img)
